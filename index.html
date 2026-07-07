@@ -1,1 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AnimeNya</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo-area">
+            <img class="logo-img" src="https://rpc.alice.yandex.ru/gproxy/get_preview_url?FileGuid=b8868072-79ed11f1-99342f55-898eb994" alt="AnimeNya" onerror="this.style.display='none'">
+            <div class="logo-text">AnimeNya</div>
+            <div class="logo-sub">アニメにゃ</div>
+        </div>
+        <div class="menu-item" data-nav="home">🏠 Главная</div>
+        <div class="menu-item" data-nav="history">🕒 История</div>
+        <div class="menu-item" data-nav="kids">👶 Детям</div>
+        <div class="menu-item" data-nav="genres">🎭 Жанры</div>
+        <div class="menu-item" id="admin-menu" style="display:none" data-nav="admin">⚙️ Админ</div>
+    </div>
 
+    <div class="content">
+        <div class="header">
+            <h2 id="page-title">🏢 Студии</h2>
+            <div id="user-avatar" class="user-avatar">🔑 Войти</div>
+        </div>
+        <div class="nav-breadcrumb" id="breadcrumb"></div>
+        <div id="search-box"><input type="text" id="search-input" placeholder="🔍 Найти аниме..."></div>
+        <div id="grid" class="grid"><div class="loading"><div class="spinner"></div></div></div>
+        <div id="info-panel">
+            <div class="info-title" id="info-title"></div>
+            <div class="info-meta" id="info-meta"></div>
+            <div class="info-desc" id="info-desc"></div>
+            <div class="rating-stars" id="rating-stars"></div>
+        </div>
+    </div>
+
+    <div id="player">
+        <div id="close-player-btn" onclick="closePlayer()">✕ ЗАКРЫТЬ</div>
+        <iframe id="video-frame" src="" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
