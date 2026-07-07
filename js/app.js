@@ -3,179 +3,188 @@ import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/fi
 import { getDatabase, ref, get, set, push } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-database.js";
 import { firebaseConfig } from './firebase.js';
 
-// Инициализация Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
-// Глобальное состояние
+// ====== STATE ======
 let currentUser = null;
-let allItems = [];
-let currentItems = [];
-let navigationStack = [];
-let activeGridIndex = 0;
-let appState = 'grid';
-let activeMenuIndex = 0;
-let infoTimeout = null;
+let allAnime = [];
 let userRatings = {};
-let COLS = window.innerWidth < 768 ? 3 : 6;
+let currentModalItem = null;
 
-// DOM-элементы
+// ====== DOM ======
 const $ = id => document.getElementById(id);
-const gridEl = $('grid');
-const userAvatar = $('user-avatar');
-const adminMenu = $('admin-menu');
-const pageTitle = $('page-title');
-const breadcrumbDiv = $('breadcrumb');
-const searchBox = $('search-box');
+const navbar = $('navbar');
+const heroImg = $('hero-img');
+const heroTitle = $('hero-title');
+const heroYear = $('hero-year');
+const heroRating = $('hero-rating');
+const heroGenre = $('hero-genre');
+const heroDesc = $('hero-desc');
+const mainContent = $('main-content');
+const searchOverlay = $('search-overlay');
 const searchInput = $('search-input');
-const playerDiv = $('player');
-const videoFrame = $('video-frame');
-const infoPanel = $('info-panel');
-const menuItems = document.querySelectorAll('.menu-item');
+const searchResults = $('search-results');
+const modalOverlay = $('modal-overlay');
+const playerOverlay = $('player-overlay');
+const playerFrame = $('player-frame');
+const btnUser = $('btn-user');
+const btnAdmin = $('btn-admin');
 
-// Обновление колонок при ресайзе
-window.addEventListener('resize', () => {
-    COLS = window.innerWidth < 768 ? 3 : 6;
-    if (currentItems.length && appState === 'grid' && currentItems[0]?.type !== 'episode') {
-        renderGrid();
-    }
+// ====== SCROLL NAVBAR ======
+window.addEventListener('scroll', () => {
+    navbar.classList.toggle('scrolled', window.scrollY > 50);
 });
 
-// ============ ЗАГРУЗКА ДАННЫХ ============
-async function loadAllData() {
-    try {
-        const snap = await get(ref(db, 'items'));
-        allItems = snap.exists() ? Object.entries(snap.val()).map(([id, v]) => ({ id, ...v })) : [];
-        console.log(`📦 Загружено ${allItems.length} элементов`);
-    } catch (e) {
-        console.error('Ошибка загрузки:', e);
-        allItems = [];
+// ====== LOAD DATA ======
+async function loadAllAnime() {
+    const snap = await get(ref(db, 'items'));
+    if (snap.exists()) {
+        const obj = snap.val();
+        allAnime = Object.entries(obj)
+            .map(([id, v]) => ({ id, ...v }))
+            .filter(item => item.type === 'anime' || item.type === 'movie' || item.type === 'episode');
+    } else {
+        allAnime = [];
     }
 }
 
 async function loadUserRatings() {
-    if (!currentUser) return;
+    if (!currentUser) { userRatings = {}; return; }
     const snap = await get(ref(db, `ratings/${currentUser.uid}`));
     userRatings = snap.exists() ? snap.val() : {};
 }
 
-function getChildren(parentId) {
-    return allItems.filter(i => i.parentId === parentId);
+// ====== RENDER ======
+function renderHero() {
+    if (!allAnime.length) return;
+    const featured = allAnime
+        .filter(a => a.rating > 0)
+        .sort((a, b) => (b.rating || 0) - (a.rating || 0))[0] || allAnime[0];
+
+    heroImg.src = featured.poster || 'https://via.placeholder.com/1920x800/1a1a2e/a855f7?text=AnimeNya';
+    heroTitle.textContent = featured.title || 'Без названия';
+    heroYear.textContent = featured.year || '2024';
+    heroRating.textContent = `⭐ ${Number(featured.rating || 0).toFixed(1)}`;
+    heroGenre.textContent = featured.genre || 'Аниме';
+    heroDesc.textContent = featured.description || 'Описание отсутствует';
+
+    $('btn-hero-play').onclick = () => playAnime(featured);
+    $('btn-hero-info').onclick = () => openModal(featured);
+    $('hero-badge').textContent = featured.rating > 8 ? '🌟 ТОП АНИМЕ' : featured.rating > 5 ? '🔥 ПОПУЛЯРНОЕ' : '🆕 НОВИНКА';
 }
 
-function getRootItems() {
-    return allItems.filter(i => !i.parentId || i.parentId === 'root');
-}
-
-// ============ РЕНДЕР ============
-function renderGrid() {
-    if (!currentItems.length) {
-        gridEl.innerHTML = '<div class="loading">📭 Ничего не найдено</div>';
+function renderSections() {
+    if (!allAnime.length) {
+        mainContent.innerHTML = '<div style="text-align:center;padding:60px;color:#888;">Нет контента. Добавьте аниме через админ-панель.</div>';
         return;
     }
 
-    // Список серий
-    if (currentItems[0]?.type === 'episode') {
-        gridEl.style.display = 'block';
-        gridEl.innerHTML = '<div class="episodes-list"></div>';
-        const cont = gridEl.querySelector('.episodes-list');
-        currentItems.forEach((ep, i) => {
-            const d = document.createElement('div');
-            d.className = 'episode-item';
-            d.onclick = () => openItem(ep, i);
-            d.onmouseenter = () => { activeGridIndex = i; renderFocus(); };
-            d.innerHTML = `
-                <div class="episode-title">🎬 ${ep.episodeNumber || '?'}. ${ep.title || 'Без названия'}</div>
-                <div class="episode-meta">${ep.duration || ''} ${ep.year ? '· ' + ep.year : ''}</div>`;
-            cont.appendChild(d);
-        });
-        renderFocus();
-        return;
+    const popular = [...allAnime].sort((a, b) => (b.rating || 0) - (a.rating || 0)).slice(0, 12);
+    const newest = [...allAnime].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 12);
+    const genres = [...new Set(allAnime.map(a => a.genre).filter(Boolean))];
+
+    let html = '';
+
+    // Популярное
+    if (popular.length) {
+        html += `
+            <div class="section">
+                <div class="section-header">
+                    <h3 class="section-title">🔥 Популярное</h3>
+                    <a href="#" class="section-link" data-nav="popular">Смотреть все →</a>
+                </div>
+                <div class="row">${popular.map(a => renderCard(a)).join('')}</div>
+            </div>`;
     }
 
-    // Грид карточек
-    gridEl.style.display = 'grid';
-    gridEl.style.gridTemplateColumns = `repeat(${COLS}, 1fr)`;
-    gridEl.innerHTML = '';
+    // Новинки
+    if (newest.length) {
+        html += `
+            <div class="section">
+                <div class="section-header">
+                    <h3 class="section-title">🆕 Новинки</h3>
+                    <a href="#" class="section-link" data-nav="new">Смотреть все →</a>
+                </div>
+                <div class="row">${newest.map(a => renderCard(a)).join('')}</div>
+            </div>`;
+    }
 
-    currentItems.forEach((item, i) => {
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.onclick = () => openItem(item, i);
-        card.onmouseenter = () => { activeGridIndex = i; renderFocus(); };
-
-        let badge = '';
-        if (item.type === 'studio') badge = '<div class="folder-badge">🏢 СТУДИЯ</div>';
-        else if (item.type === 'series') badge = '<div class="folder-badge series">📺 СЕРИАЛ</div>';
-        else if (item.type === 'season') badge = '<div class="folder-badge season">📁 СЕЗОН</div>';
-        else if ((item.type === 'movie' || item.type === 'episode') && item.rating > 0)
-            badge = `<div class="rating-badge"><span class="star-icon">⭐</span> ${Number(item.rating).toFixed(1)}</div>`;
-
-        card.innerHTML = `${badge}<img src="${item.poster || 'https://via.placeholder.com/300x450/1a1a2e/a855f7?text=AnimeNya'}" referrerpolicy="no-referrer" onerror="this.src='https://via.placeholder.com/300x450/1a1a2e/a855f7?text=Error'">`;
-        gridEl.appendChild(card);
+    // По жанрам (первые 4 жанра)
+    genres.slice(0, 4).forEach(genre => {
+        const items = allAnime.filter(a => a.genre === genre).slice(0, 12);
+        if (!items.length) return;
+        html += `
+            <div class="section">
+                <div class="section-header">
+                    <h3 class="section-title">🎭 ${genre}</h3>
+                    <a href="#" class="section-link" data-genre="${genre}">Смотреть все →</a>
+                </div>
+                <div class="row">${items.map(a => renderCard(a)).join('')}</div>
+            </div>`;
     });
-    renderFocus();
+
+    mainContent.innerHTML = html;
 }
 
-function renderFocus() {
-    document.querySelectorAll('.card, .episode-item').forEach(e => e.classList.remove('focused'));
-    menuItems.forEach(e => e.classList.remove('focused'));
-
-    if (appState === 'menu') {
-        if (menuItems[activeMenuIndex]) menuItems[activeMenuIndex].classList.add('focused');
-    } else if (appState === 'grid' && currentItems.length) {
-        const els = currentItems[0]?.type === 'episode'
-            ? document.querySelectorAll('.episode-item')
-            : document.querySelectorAll('.card');
-        if (els[activeGridIndex]) {
-            els[activeGridIndex].classList.add('focused');
-            els[activeGridIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
-            showInfoPanel(currentItems[activeGridIndex]);
-        }
-    }
+function renderCard(anime) {
+    const rating = Number(anime.rating || 0);
+    return `
+        <div class="card-item" data-id="${anime.id}">
+            <div class="card-poster" onclick="window._openModalById('${anime.id}')">
+                <img src="${anime.poster || 'https://via.placeholder.com/300x450/1a1a2e/a855f7?text=Nya'}" 
+                     alt="${anime.title}" 
+                     loading="lazy"
+                     onerror="this.src='https://via.placeholder.com/300x450/1a1a2e/a855f7?text=Error'">
+                <div class="card-overlay">
+                    <div class="card-play-btn" onclick="event.stopPropagation(); window._playById('${anime.id}')">▶</div>
+                </div>
+                ${rating > 0 ? `<div class="card-rating"><span class="star">⭐</span> ${rating.toFixed(1)}</div>` : ''}
+            </div>
+            <div class="card-title">${anime.title || 'Без названия'}</div>
+            <div class="card-meta">${anime.year || ''} · ${anime.genre || 'Аниме'}</div>
+        </div>`;
 }
 
-function showInfoPanel(item) {
-    if (infoTimeout) clearTimeout(infoTimeout);
-    $('info-title').innerText = item.title || 'Без названия';
-    
-    const typeMap = {
-        studio: 'Студия',
-        series: 'Сериал',
-        season: 'Сезон',
-        episode: `Серия ${item.episodeNumber || ''}`,
-        movie: item.genre || 'Аниме'
-    };
-    
-    $('info-meta').innerHTML = `${item.year || '----'} · ${typeMap[item.type] || ''}`;
-    $('info-desc').innerText = item.description || 'Нет описания';
+// ====== MODAL ======
+function openModal(anime) {
+    currentModalItem = anime;
+    $('modal-img').src = anime.poster || '';
+    $('modal-title').textContent = anime.title || '';
+    $('modal-year').textContent = anime.year || '----';
+    $('modal-rating').textContent = `⭐ ${Number(anime.rating || 0).toFixed(1)}`;
+    $('modal-genre').textContent = anime.genre || 'Аниме';
+    $('modal-desc').textContent = anime.description || 'Описание отсутствует';
 
-    const starsDiv = $('rating-stars');
-    if (currentUser && (item.type === 'movie' || item.type === 'episode') && item.id) {
-        starsDiv.style.display = 'flex';
-        starsDiv.innerHTML = '';
-        const ur = userRatings[item.id] || 0;
+    // Звёзды
+    const starsDiv = $('modal-stars');
+    starsDiv.innerHTML = '';
+    if (currentUser) {
+        const ur = userRatings[anime.id] || 0;
         for (let i = 1; i <= 10; i++) {
-            const s = document.createElement('span');
-            s.className = 'star' + (i <= ur ? ' active' : '');
-            s.innerHTML = i <= ur ? '★' : '☆';
-            s.onclick = e => { e.stopPropagation(); rateItem(item.id, i); };
-            starsDiv.appendChild(s);
+            const star = document.createElement('button');
+            star.className = 'star-btn' + (i <= ur ? ' active' : '');
+            star.textContent = i <= ur ? '★' : '☆';
+            star.onclick = () => rateAnime(anime.id, i);
+            starsDiv.appendChild(star);
         }
     } else {
-        starsDiv.style.display = 'none';
+        starsDiv.innerHTML = '<span style="color:#888;font-size:13px;">Войдите, чтобы оценивать</span>';
     }
 
-    infoPanel.classList.add('visible');
-    infoTimeout = setTimeout(() => infoPanel.classList.remove('visible'), 6000);
+    $('btn-modal-play').onclick = () => { closeModal(); playAnime(anime); };
+    modalOverlay.classList.add('active');
 }
 
-async function rateItem(itemId, rating) {
-    if (!currentUser) {
-        alert('🔑 Войдите в аккаунт, чтобы оценивать!');
-        return;
-    }
+function closeModal() {
+    modalOverlay.classList.remove('active');
+    currentModalItem = null;
+}
+
+// ====== RATING ======
+async function rateAnime(itemId, rating) {
+    if (!currentUser) { alert('Войдите в аккаунт!'); return; }
     try {
         await set(ref(db, `ratings/${currentUser.uid}/${itemId}`), rating);
         userRatings[itemId] = rating;
@@ -184,363 +193,193 @@ async function rateItem(itemId, rating) {
         let total = 0, count = 0;
         if (snap.exists()) {
             for (const uid in snap.val()) {
-                if (snap.val()[uid][itemId]) {
-                    total += snap.val()[uid][itemId];
-                    count++;
-                }
+                if (snap.val()[uid][itemId]) { total += snap.val()[uid][itemId]; count++; }
             }
         }
         const avg = count ? total / count : 0;
         await set(ref(db, `items/${itemId}/rating`), avg);
-
-        const idx = allItems.findIndex(i => i.id === itemId);
-        if (idx !== -1) allItems[idx].rating = avg;
-        const cidx = currentItems.findIndex(i => i.id === itemId);
-        if (cidx !== -1) currentItems[cidx].rating = avg;
-
-        renderGrid();
-        showInfoPanel(currentItems[activeGridIndex] || allItems[idx]);
-    } catch (e) {
-        console.error('Ошибка оценки:', e);
-    }
+        const idx = allAnime.findIndex(a => a.id === itemId);
+        if (idx !== -1) allAnime[idx].rating = avg;
+        if (currentModalItem?.id === itemId) {
+            currentModalItem.rating = avg;
+            $('modal-rating').textContent = `⭐ ${avg.toFixed(1)}`;
+        }
+        // Перерендер звёзд
+        openModal(currentModalItem || allAnime[idx]);
+        renderHero();
+        renderSections();
+    } catch (e) { console.error(e); }
 }
 
-// ============ ОТКРЫТИЕ ============
-async function openItem(item, index) {
-    // Папки
-    if (item.type === 'studio' || item.type === 'series' || item.type === 'season') {
-        navigationStack.push({
-            parentId: item.id,
-            title: item.title,
-            items: [...currentItems],
-            scrollIndex: activeGridIndex
-        });
-        updateBreadcrumb();
-        currentItems = getChildren(item.id);
-        pageTitle.innerText = item.title;
-        searchBox.style.display = 'none';
-        activeGridIndex = 0;
-        appState = 'grid';
-        renderGrid();
+// ====== PLAYER ======
+function playAnime(anime) {
+    if (!currentUser) {
+        alert('Войдите в аккаунт для просмотра!');
+        window.location.href = 'login.html';
         return;
     }
-
-    // Видео
-    if (item.type === 'movie' || item.type === 'episode') {
-        if (!currentUser) {
-            alert('🔑 Войдите в аккаунт для просмотра!');
-            window.location.href = 'login.html';
-            return;
-        }
-        await saveToHistory(item.id, item.title);
-        openIframePlayer(item.url, item.title);
+    saveToHistory(anime.id, anime.title);
+    let url = anime.url || anime.videoUrl || '';
+    if (url && url.includes('vk.com/video') && !url.includes('video_ext.php')) {
+        const m = url.match(/video[_-]?(\d+)[_-](\d+)/);
+        if (m) url = `https://vk.com/video_ext.php?oid=${m[1]}&id=${m[2]}&hd=2&autoplay=1`;
     }
-}
-
-function openIframePlayer(videoUrl, title) {
-    let embedUrl = videoUrl;
-    
-    // Конвертация ссылок VK Video
-    if (videoUrl && videoUrl.includes('vk.com/video') && !videoUrl.includes('video_ext.php')) {
-        const match = videoUrl.match(/video[_-]?(\d+)[_-](\d+)/);
-        if (match) {
-            embedUrl = `https://vk.com/video_ext.php?oid=${match[1]}&id=${match[2]}&hd=2&autoplay=1&z=video`;
-        }
-    }
-    
-    // Добавление параметров к embed
-    if (embedUrl && embedUrl.includes('video_ext.php')) {
-        const urlParams = new URLSearchParams(embedUrl.split('?')[1]);
-        const oid = urlParams.get('oid');
-        const id = urlParams.get('id');
-        if (oid && id) {
-            embedUrl = `https://vk.com/video_ext.php?oid=${oid}&id=${id}&hd=2&autoplay=1&z=video`;
-        }
-    }
-
-    console.log('▶️ Открытие:', embedUrl);
-    videoFrame.src = embedUrl || '';
-    playerDiv.style.display = 'block';
-    appState = 'player';
-}
-
-function closePlayer() {
-    videoFrame.src = 'about:blank';
-    playerDiv.style.display = 'none';
-    appState = 'grid';
-    renderFocus();
+    playerFrame.src = url;
+    playerOverlay.classList.add('active');
 }
 
 async function saveToHistory(id, title) {
     try {
-        const historyRef = ref(db, `history/${currentUser.uid}`);
-        await set(push(historyRef), {
+        await set(push(ref(db, `history/${currentUser.uid}`)), {
             movieId: id,
             movieTitle: title,
             timestamp: Date.now()
         });
-    } catch (e) {
-        console.error('Ошибка истории:', e);
-    }
+    } catch (e) { console.error(e); }
 }
 
-// ============ НАВИГАЦИЯ ============
-function updateBreadcrumb() {
-    if (!navigationStack.length) {
-        breadcrumbDiv.innerHTML = '';
-        return;
-    }
-    let html = '<span class="back-btn" onclick="window.goBack()">← Назад</span> ';
-    navigationStack.forEach((nav, idx) => {
-        html += `<span onclick="window.goToLevel(${idx})">${nav.title}</span>`;
-        if (idx < navigationStack.length - 1) html += ' / ';
-    });
-    breadcrumbDiv.innerHTML = html;
-}
-
-window.goBack = function() {
-    if (navigationStack.length) {
-        const last = navigationStack.pop();
-        currentItems = last.items;
-        pageTitle.innerText = last.title;
-        activeGridIndex = last.scrollIndex || 0;
-        updateBreadcrumb();
-        appState = 'grid';
-        renderGrid();
-    } else {
-        navigateToHome();
-    }
-};
-
-window.goToLevel = function(level) {
-    while (navigationStack.length > level + 1) navigationStack.pop();
-    if (navigationStack.length) {
-        const current = navigationStack[navigationStack.length - 1];
-        currentItems = current.items;
-        pageTitle.innerText = current.title;
-        activeGridIndex = current.scrollIndex || 0;
-        updateBreadcrumb();
-        appState = 'grid';
-        renderGrid();
-    } else {
-        navigateToHome();
-    }
-};
-
-async function navigateToHome() {
-    navigationStack = [];
-    updateBreadcrumb();
-    pageTitle.innerText = '🏢 Студии';
-    searchBox.style.display = 'block';
-    currentItems = getRootItems();
-    activeGridIndex = 0;
-    appState = 'grid';
-    renderGrid();
-}
-
-async function navigateToHistory() {
-    if (!currentUser) {
-        alert('Войдите в аккаунт');
-        return;
-    }
-    navigationStack = [];
-    updateBreadcrumb();
-    try {
-        const snap = await get(ref(db, `history/${currentUser.uid}`));
-        const historyItems = [];
-        if (snap.exists()) {
-            const arr = Object.values(snap.val()).sort((a, b) => b.timestamp - a.timestamp);
-            for (const h of arr.slice(0, 50)) {
-                const found = allItems.find(i => i.id === h.movieId);
-                if (found) historyItems.push(found);
-            }
-        }
-        currentItems = historyItems;
-        pageTitle.innerText = '🕒 История просмотров';
-        searchBox.style.display = 'none';
-        renderGrid();
-    } catch (e) {
-        gridEl.innerHTML = '<div class="loading">Ошибка загрузки</div>';
-    }
-}
-
-function navigateToKids() {
-    navigationStack = [];
-    updateBreadcrumb();
-    currentItems = allItems.filter(i =>
-        (i.type === 'movie' || i.type === 'episode') &&
-        (i.forKids === true || i.genre === 'Мультфильм' || i.genre === 'Семейный' || i.genre === 'Кодомо')
-    );
-    pageTitle.innerText = '👶 Детям';
-    searchBox.style.display = 'none';
-    renderGrid();
-}
-
-function navigateToGenres() {
-    navigationStack = [];
-    updateBreadcrumb();
-    const movies = allItems.filter(i => i.type === 'movie' || i.type === 'episode');
-    const genres = [...new Set(movies.map(m => m.genre).filter(g => g))];
-    gridEl.innerHTML = genres.map(g => `
-        <div class="card" style="aspect-ratio:auto; padding:24px; text-align:center; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:8px;"
-             onclick="window.navigateToGenre('${g.replace(/'/g, "\\'")}')">
-            <span style="font-size:40px;">🎬</span>
-            <strong>${g}</strong>
-        </div>
-    `).join('');
-    pageTitle.innerText = '🎭 Жанры';
-    searchBox.style.display = 'none';
-    currentItems = [];
-}
-
-window.navigateToGenre = function(genre) {
-    navigationStack = [];
-    updateBreadcrumb();
-    currentItems = allItems.filter(i => (i.type === 'movie' || i.type === 'episode') && i.genre === genre);
-    pageTitle.innerText = `🎭 ${genre}`;
-    searchBox.style.display = 'block';
-    renderGrid();
-};
-
-// Поиск
-searchInput.addEventListener('input', (e) => {
-    const query = e.target.value.toLowerCase().trim();
-    if (!query) {
-        navigateToHome();
-        return;
-    }
-    const content = allItems.filter(i => i.type === 'movie' || i.type === 'episode' || i.type === 'series');
-    currentItems = content.filter(i =>
-        i.title?.toLowerCase().includes(query) ||
-        i.genre?.toLowerCase().includes(query) ||
-        i.description?.toLowerCase().includes(query)
-    );
-    pageTitle.innerText = `🔍 Результаты: "${query}"`;
-    activeGridIndex = 0;
-    renderGrid();
+// ====== SEARCH ======
+let searchTimeout;
+searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+        const q = searchInput.value.toLowerCase().trim();
+        if (!q) { searchResults.innerHTML = ''; return; }
+        const results = allAnime.filter(a =>
+            a.title?.toLowerCase().includes(q) ||
+            a.genre?.toLowerCase().includes(q) ||
+            a.description?.toLowerCase().includes(q)
+        ).slice(0, 10);
+        searchResults.innerHTML = results.map(a => `
+            <div class="search-result-item" onclick="window._openModalById('${a.id}'); document.getElementById('search-overlay').classList.remove('active');">
+                <img src="${a.poster || 'https://via.placeholder.com/50x70/1a1a2e/a855f7'}" onerror="this.src='https://via.placeholder.com/50x70/1a1a2e/a855f7'">
+                <div class="search-result-info">
+                    <div class="srt">${a.title}</div>
+                    <div class="srm">${a.year || ''} · ⭐ ${Number(a.rating||0).toFixed(1)} · ${a.genre || ''}</div>
+                </div>
+            </div>
+        `).join('');
+    }, 300);
 });
 
-// ============ КЛАВИАТУРА ============
+// ====== EVENT LISTENERS ======
+$('btn-search').onclick = () => {
+    searchOverlay.classList.toggle('active');
+    if (searchOverlay.classList.contains('active')) {
+        setTimeout(() => searchInput.focus(), 100);
+    } else {
+        searchInput.value = '';
+        searchResults.innerHTML = '';
+    }
+};
+
+$('modal-close').onclick = closeModal;
+$('.modal-close-btn')?.addEventListener('click', closeModal);
+modalOverlay.onclick = (e) => { if (e.target === modalOverlay) closeModal(); };
+searchOverlay.onclick = (e) => {
+    if (e.target === searchOverlay) {
+        searchOverlay.classList.remove('active');
+        searchInput.value = '';
+        searchResults.innerHTML = '';
+    }
+};
+
+$('player-close').onclick = () => {
+    playerFrame.src = '';
+    playerOverlay.classList.remove('active');
+};
+
 document.addEventListener('keydown', (e) => {
-    const key = e.key;
-
-    // В плеере
-    if (playerDiv.style.display === 'block') {
-        if (key === 'Escape' || key === 'Backspace') {
-            e.preventDefault();
-            closePlayer();
-        }
-        return;
-    }
-
-    // В поиске
-    if (document.activeElement === searchInput) {
-        if (key === 'ArrowDown' && currentItems.length) {
-            searchInput.blur();
-            appState = 'grid';
-            activeGridIndex = 0;
-            renderFocus();
-        }
-        if (key === 'Escape') searchInput.blur();
-        return;
-    }
-
-    // В меню
-    if (appState === 'menu') {
-        if (key === 'ArrowUp') { e.preventDefault(); activeMenuIndex = (activeMenuIndex - 1 + menuItems.length) % menuItems.length; renderFocus(); }
-        else if (key === 'ArrowDown') { e.preventDefault(); activeMenuIndex = (activeMenuIndex + 1) % menuItems.length; renderFocus(); }
-        else if (key === 'ArrowRight') { e.preventDefault(); if (currentItems.length) { appState = 'grid'; activeGridIndex = 0; renderFocus(); } }
-        else if (key === 'Enter') {
-            const nav = menuItems[activeMenuIndex].dataset.nav;
-            handleMenuNavigation(nav);
-        }
-    }
-    // В гриде
-    else if (appState === 'grid' && currentItems.length) {
-        const total = currentItems.length;
-        const isEpisodes = currentItems[0]?.type === 'episode';
-
-        if (key === 'ArrowRight') {
-            e.preventDefault();
-            if (!isEpisodes && activeGridIndex + 1 < total) activeGridIndex++;
-            renderFocus();
-        } else if (key === 'ArrowLeft') {
-            e.preventDefault();
-            if (!isEpisodes && activeGridIndex > 0) activeGridIndex--;
-            else if (!isEpisodes && activeGridIndex === 0) { appState = 'menu'; activeMenuIndex = 0; renderFocus(); }
-            renderFocus();
-        } else if (key === 'ArrowDown') {
-            e.preventDefault();
-            if (isEpisodes) { if (activeGridIndex + 1 < total) activeGridIndex++; }
-            else { let next = activeGridIndex + COLS; if (next < total) activeGridIndex = next; }
-            renderFocus();
-        } else if (key === 'ArrowUp') {
-            e.preventDefault();
-            if (isEpisodes) { if (activeGridIndex > 0) activeGridIndex--; else searchInput.focus(); }
-            else { let prev = activeGridIndex - COLS; if (prev >= 0) activeGridIndex = prev; else searchInput.focus(); }
-            renderFocus();
-        } else if (key === 'Enter') {
-            e.preventDefault();
-            openItem(currentItems[activeGridIndex], activeGridIndex);
-        } else if (key === 'Backspace' || key === 'Escape') {
-            e.preventDefault();
-            window.goBack();
+    if (e.key === 'Escape') {
+        if (playerOverlay.classList.contains('active')) {
+            playerFrame.src = '';
+            playerOverlay.classList.remove('active');
+        } else if (modalOverlay.classList.contains('active')) {
+            closeModal();
+        } else if (searchOverlay.classList.contains('active')) {
+            searchOverlay.classList.remove('active');
+            searchInput.value = '';
+            searchResults.innerHTML = '';
         }
     }
 });
 
-function handleMenuNavigation(nav) {
-    switch (nav) {
-        case 'home': navigateToHome(); break;
-        case 'history': navigateToHistory(); break;
-        case 'kids': navigateToKids(); break;
-        case 'genres': navigateToGenres(); break;
-        case 'admin': window.location.href = 'admin.html'; break;
-    }
+// Nav links
+document.querySelectorAll('.nav-links a, .section-link').forEach(link => {
+    link.addEventListener('click', (e) => {
+        e.preventDefault();
+        document.querySelectorAll('.nav-links a').forEach(l => l.classList.remove('active'));
+        const navLink = document.querySelector(`.nav-links a[data-nav="${link.dataset.nav || link.dataset.genre}"]`);
+        if (navLink) navLink.classList.add('active');
+
+        const genre = link.dataset.genre;
+        if (genre) {
+            const items = allAnime.filter(a => a.genre === genre);
+            mainContent.innerHTML = `
+                <div class="section" style="padding:0 60px;">
+                    <div class="section-header">
+                        <h3 class="section-title">🎭 ${genre}</h3>
+                    </div>
+                    <div class="row" style="flex-wrap:wrap;gap:16px;">${items.map(a => renderCard(a)).join('')}</div>
+                </div>`;
+            window.scrollTo({ top: 300, behavior: 'smooth' });
+        } else if (link.dataset.nav === 'popular') {
+            const items = [...allAnime].sort((a, b) => (b.rating || 0) - (a.rating || 0));
+            renderFilteredSection('🔥 Популярное', items);
+        } else if (link.dataset.nav === 'new') {
+            const items = [...allAnime].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            renderFilteredSection('🆕 Новинки', items);
+        } else if (link.dataset.nav === 'home') {
+            renderSections();
+            renderHero();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    });
+});
+
+function renderFilteredSection(title, items) {
+    mainContent.innerHTML = `
+        <div class="section" style="padding:0 60px;">
+            <div class="section-header">
+                <h3 class="section-title">${title}</h3>
+            </div>
+            <div class="row" style="flex-wrap:wrap;gap:16px;">${items.map(a => renderCard(a)).join('')}</div>
+        </div>`;
+    window.scrollTo({ top: 300, behavior: 'smooth' });
 }
 
-// Клики по меню
-menuItems.forEach(el => {
-    el.addEventListener('click', () => handleMenuNavigation(el.dataset.nav));
-});
-
-// Кнопка пользователя
-userAvatar.onclick = () => {
-    if (!currentUser) {
-        window.location.href = 'login.html';
-    } else if (confirm('Выйти из аккаунта?')) {
-        signOut(auth).then(() => window.location.reload());
-    }
+btnUser.onclick = () => {
+    if (!currentUser) window.location.href = 'login.html';
+    else if (confirm('Выйти?')) signOut(auth).then(() => window.location.reload());
 };
 
-// Глобальные функции
-window.closePlayer = closePlayer;
-window.goBack = window.goBack;
-window.goToLevel = window.goToLevel;
-window.navigateToGenre = window.navigateToGenre;
+btnAdmin.onclick = () => window.location.href = 'admin.html';
 
-// ============ АВТОРИЗАЦИЯ ============
+// Глобальные хелперы для onclick в HTML
+window._openModalById = (id) => {
+    const anime = allAnime.find(a => a.id === id);
+    if (anime) openModal(anime);
+};
+window._playById = (id) => {
+    const anime = allAnime.find(a => a.id === id);
+    if (anime) playAnime(anime);
+};
+
+// ====== AUTH ======
 onAuthStateChanged(auth, async (user) => {
     if (user) {
         currentUser = user;
-        const displayName = user.email ? user.email.split('@')[0].slice(0, 15) : 'User';
-        userAvatar.innerHTML = `👤 ${displayName}`;
-
-        const userRef = ref(db, `users/${user.uid}/isAdmin`);
-        const snap = await get(userRef);
-        if (snap.val() === true) {
-            adminMenu.style.display = 'flex';
-        }
-
+        btnUser.innerHTML = `👤 ${(user.email || 'User').split('@')[0].slice(0, 12)}`;
+        const snap = await get(ref(db, `users/${user.uid}/isAdmin`));
+        if (snap.val() === true) btnAdmin.style.display = 'block';
         await loadUserRatings();
-        await loadAllData();
-        navigateToHome();
     } else {
         currentUser = null;
-        userAvatar.innerHTML = '🔑 Войти';
-        adminMenu.style.display = 'none';
+        btnUser.innerHTML = '🔑 Войти';
+        btnAdmin.style.display = 'none';
         userRatings = {};
-        await loadAllData();
-        navigateToHome();
     }
+    await loadAllAnime();
+    renderHero();
+    renderSections();
 });
