@@ -7,212 +7,320 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
-// ====== STATE ======
 let allItems = [];
-let currentView = 'anime'; // 'anime' | 'series' | 'season' | 'episode'
-let currentParentId = null; // для просмотра сезонов/серий внутри сериала
+let currentView = 'anime'; // anime | series | season | episode
+let currentParentId = null;
 let currentParentTitle = '';
-let contextTarget = null; // элемент для контекстного меню
-let selectedItems = new Set();
-
-// ====== DOM ======
+let contextTargetId = null;
 const $ = id => document.getElementById(id);
-const contextMenu = $('context-menu');
-const modalOverlay = $('modal-overlay');
-const modal = $('modal');
-const contentGrid = $('content-grid');
-const contentTitle = $('content-title');
-const breadcrumb = $('breadcrumb');
-const btnAdd = $('btn-add');
 
-// ====== AUTH CHECK ======
+// ====== AUTH ======
 onAuthStateChanged(auth, async (user) => {
     if (!user) { window.location.href = 'login.html'; return; }
     const snap = await get(ref(db, `users/${user.uid}/isAdmin`));
-    if (snap.val() !== true) {
-        alert('⛔ Нет прав администратора');
-        window.location.href = 'index.html';
-        return;
-    }
-    await loadAllItems();
+    if (snap.val() !== true) { alert('⛔ Нет прав'); window.location.href = 'index.html'; return; }
+    await loadItems();
     refreshView();
 });
 
 // ====== DATA ======
-async function loadAllItems() {
+async function loadItems() {
     const snap = await get(ref(db, 'items'));
     allItems = snap.exists() ? Object.entries(snap.val()).map(([id, v]) => ({ id, ...v })) : [];
-    updateCounts();
-}
-
-function updateCounts() {
     $('count-anime').textContent = allItems.filter(i => i.type === 'anime' || i.type === 'movie' || (!i.type && i.url)).length;
     $('count-series').textContent = allItems.filter(i => i.type === 'series').length;
 }
 
-// ====== RENDER ======
+// ====== VIEW ======
 function refreshView() {
-    selectedItems.clear();
-    contextMenu.style.display = 'none';
-
-    if (currentView === 'anime') {
-        renderAnimeView();
-    } else if (currentView === 'series') {
-        renderSeriesView();
-    } else if (currentView === 'season') {
-        renderChildrenView('season', 'Сезоны');
-    } else if (currentView === 'episode') {
-        renderChildrenView('episode', 'Серии');
-    }
+    $('context-menu').style.display = 'none';
+    if (currentView === 'anime') showAnime();
+    else if (currentView === 'series') showSeries();
+    else if (currentView === 'season') showChildren('season', 'Сезоны');
+    else if (currentView === 'episode') showChildren('episode', 'Серии');
 }
 
-function renderAnimeView() {
+function showAnime() {
     currentParentId = null;
-    currentParentTitle = '';
-    contentTitle.textContent = '🎬 Аниме / Фильмы';
-    btnAdd.textContent = '➕ Добавить аниме';
-    btnAdd.onclick = () => openModal('anime');
-    breadcrumb.innerHTML = '';
-
+    $('content-title').textContent = '🎬 Аниме / Фильмы';
+    $('btn-add').textContent = '➕ Добавить аниме';
+    $('btn-add').onclick = () => openModal('anime');
+    $('breadcrumb').innerHTML = '';
     const items = allItems.filter(i => i.type === 'anime' || i.type === 'movie' || (!i.type && i.url));
-    renderGrid(items, 'anime');
+    renderGrid(items, 'badge-anime', 'АНИМЕ');
 }
 
-function renderSeriesView() {
+function showSeries() {
     currentParentId = null;
-    currentParentTitle = '';
-    contentTitle.textContent = '📺 Сериалы';
-    btnAdd.textContent = '➕ Добавить сериал';
-    btnAdd.onclick = () => openModal('series');
-    breadcrumb.innerHTML = '';
-
+    $('content-title').textContent = '📺 Сериалы';
+    $('btn-add').textContent = '➕ Добавить сериал';
+    $('btn-add').onclick = () => openModal('series');
+    $('breadcrumb').innerHTML = '';
     const items = allItems.filter(i => i.type === 'series');
-    renderGrid(items, 'series');
+    renderGrid(items, 'badge-series', 'СЕРИАЛ');
 }
 
-function renderChildrenView(type, label) {
-    contentTitle.textContent = `📁 ${currentParentTitle} → ${label}`;
-    btnAdd.textContent = `➕ Добавить ${label.toLowerCase().slice(0, -1)}`;
-    btnAdd.onclick = () => openModal(type, currentParentId);
-    breadcrumb.innerHTML = `
-        <span onclick="window._navToSeries()">📺 Сериалы</span>
-        <span style="color:#666;">/</span>
-        <span style="color:#c4b5fd;">${currentParentTitle}</span>
-    `;
+function showChildren(type, label) {
+    $('content-title').textContent = `📁 ${currentParentTitle} → ${label}`;
+    $('btn-add').textContent = `➕ Добавить ${label.toLowerCase().slice(0, -1)}`;
+    $('btn-add').onclick = () => openModal(type, currentParentId);
+    $('breadcrumb').innerHTML = `<span style="cursor:pointer;color:#a78bfa;" onclick="window._navSeries()">📺 Сериалы</span> <span style="color:#666;">/</span> ${currentParentTitle}`;
 
     const items = allItems.filter(i => i.type === type && i.parentId === currentParentId);
     
-    if (type === 'episode') {
-        renderEpisodesTable(items);
-    } else {
-        renderGrid(items, type);
+    if (type === 'season') {
+        // Для сезонов показываем тип
+        const mapped = items.map(s => ({
+            ...s,
+            _badgeClass: s.seasonType === 'timeline' ? 'badge-timeline' : 'badge-separate',
+            _badgeText: s.seasonType === 'timeline' ? 'ТАЙМКОД' : 'РАЗДЕЛЬНЫЙ'
+        }));
+        renderGrid(mapped, null, null, true);
+    } else if (type === 'episode') {
+        // Серии — таблица
+        renderEpisodes(items);
     }
 }
 
-function renderGrid(items, type) {
+function renderGrid(items, defaultBadgeClass, defaultBadgeText, useCustomBadge = false) {
+    const grid = $('content-grid');
+    grid.className = 'content-grid';
     if (!items.length) {
-        contentGrid.innerHTML = `
-            <div class="empty-state" style="grid-column:1/-1;">
-                <div class="icon">📭</div>
-                <p>Нет контента</p>
-                <button class="btn-add" onclick="$('btn-add').click()">➕ Добавить</button>
-            </div>`;
+        grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px;color:#666;">📭 Пусто</div>';
         return;
     }
-
-    contentGrid.className = 'content-grid';
-    contentGrid.innerHTML = items.map(item => {
-        const badgeClass = { anime: 'badge-anime', movie: 'badge-anime', series: 'badge-series', season: 'badge-season', episode: 'badge-episode' };
-        const badgeText = { anime: 'АНИМЕ', movie: 'АНИМЕ', series: 'СЕРИАЛ', season: 'СЕЗОН', episode: 'СЕРИЯ' };
-        const childrenCount = allItems.filter(i => i.parentId === item.id).length;
-        
+    grid.innerHTML = items.map(item => {
+        const bc = useCustomBadge ? item._badgeClass : defaultBadgeClass;
+        const bt = useCustomBadge ? item._badgeText : defaultBadgeText;
+        const children = allItems.filter(i => i.parentId === item.id).length;
         return `
-            <div class="content-card ${selectedItems.has(item.id) ? 'selected' : ''}" 
-                 data-id="${item.id}" 
-                 data-type="${item.type || 'anime'}"
-                 data-title="${escapeHtml(item.title || '')}"
-                 data-context="item">
+            <div class="content-card" data-id="${item.id}" data-type="${item.type}" data-context="item"
+                 ondblclick="window._openItem('${item.id}')"
+                 oncontextmenu="window._ctx(event, '${item.id}')">
                 <div class="card-poster">
-                    <img src="${item.poster || 'https://via.placeholder.com/400x250/1a1a2e/a855f7?text=Nya'}" 
-                         onerror="this.src='https://via.placeholder.com/400x250/1a1a2e/a855f7?text=Error'">
-                    <div class="card-type-badge ${badgeClass[item.type] || 'badge-anime'}">${badgeText[item.type] || 'КОНТЕНТ'}</div>
+                    <img src="${item.poster || 'https://via.placeholder.com/400x250/1a1a2e/a855f7?text=Nya'}" onerror="this.src='https://via.placeholder.com/400x250/1a1a2e/a855f7?text=Error'">
+                    <div class="card-type-badge ${bc}">${bt}</div>
                 </div>
                 <div class="card-body">
-                    <div class="card-name">${item.title || 'Без названия'}</div>
-                    <div class="card-meta">
-                        <span>${item.year || '—'}</span>
-                        <span>·</span>
-                        <span class="card-rating-badge">⭐ ${Number(item.rating || 0).toFixed(1)}</span>
-                    </div>
-                    ${childrenCount > 0 ? `<div class="card-children-count">📂 ${childrenCount} вложений</div>` : ''}
+                    <div class="card-name">${esc(item.title || '—')}</div>
+                    <div class="card-meta">${item.year || ''} ${item.genre ? '· '+item.genre : ''}</div>
+                    ${children ? `<div class="card-children-count">📂 ${children} вложений</div>` : ''}
                 </div>
             </div>`;
     }).join('');
-
-    attachCardEvents();
 }
 
-function renderEpisodesTable(items) {
-    contentGrid.className = '';
+function renderEpisodes(items) {
+    const grid = $('content-grid');
+    grid.className = '';
     if (!items.length) {
-        contentGrid.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>Нет серий</p></div>';
+        grid.innerHTML = '<div style="text-align:center;padding:60px;color:#666;">📭 Нет серий</div>';
         return;
     }
     items.sort((a, b) => (parseInt(a.episodeNumber) || 0) - (parseInt(b.episodeNumber) || 0));
-    contentGrid.innerHTML = `
-        <table class="episodes-table">
-            <thead><tr><th>№</th><th>Название</th><th>Длительность</th><th>Рейтинг</th></tr></thead>
-            <tbody>
-                ${items.map(ep => `
-                    <tr class="${selectedItems.has(ep.id) ? 'selected' : ''}" 
-                        data-id="${ep.id}" 
-                        data-type="episode"
-                        data-context="item">
-                        <td>${ep.episodeNumber || '—'}</td>
-                        <td><strong>${escapeHtml(ep.title || 'Без названия')}</strong></td>
-                        <td>${ep.duration || '—'}</td>
-                        <td>⭐ ${Number(ep.rating || 0).toFixed(1)}</td>
-                    </tr>`).join('')}
-            </tbody>
+    const season = allItems.find(i => i.id === currentParentId);
+    const isTimeline = season?.seasonType === 'timeline';
+    grid.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;">
+            <thead><tr style="text-align:left;border-bottom:1px solid rgba(255,255,255,0.08);">
+                <th style="padding:10px 14px;color:#666;font-size:11px;text-transform:uppercase;">№</th>
+                <th style="padding:10px 14px;color:#666;font-size:11px;text-transform:uppercase;">Название</th>
+                ${isTimeline ? '<th style="padding:10px 14px;color:#666;font-size:11px;text-transform:uppercase;">Таймкоды</th>' : ''}
+                <th style="padding:10px 14px;color:#666;font-size:11px;text-transform:uppercase;">Рейтинг</th>
+            </tr></thead>
+            <tbody>${items.map(ep => `
+                <tr data-id="${ep.id}" data-type="episode" data-context="item"
+                    ondblclick="window._openItem('${ep.id}')"
+                    oncontextmenu="window._ctx(event, '${ep.id}')"
+                    style="cursor:pointer;transition:0.2s;border-bottom:1px solid rgba(255,255,255,0.02);"
+                    onmouseover="this.style.background='rgba(168,85,247,0.05)'"
+                    onmouseout="this.style.background=''">
+                    <td style="padding:10px 14px;">${ep.episodeNumber || '—'}</td>
+                    <td style="padding:10px 14px;font-weight:600;">${esc(ep.title || 'Без названия')}</td>
+                    ${isTimeline ? `<td style="padding:10px 14px;font-size:12px;color:#888;">${fmt(ep.startTime)} → ${fmt(ep.endTime)}</td>` : ''}
+                    <td style="padding:10px 14px;color:#fbbf24;">⭐ ${Number(ep.rating||0).toFixed(1)}</td>
+                </tr>`).join('')}</tbody>
         </table>`;
-    attachCardEvents();
 }
 
-function attachCardEvents() {
-    document.querySelectorAll('[data-context="item"]').forEach(el => {
-        el.addEventListener('click', (e) => {
-            if (e.ctrlKey || e.metaKey) {
-                toggleSelect(el.dataset.id);
-            }
-        });
+// ====== MODAL ======
+function openModal(type, parentId = null, editItem = null) {
+    $('form-id').value = editItem?.id || '';
+    $('form-type').value = type;
+    $('form-parent').value = parentId || '';
+    $('form-title').value = editItem?.title || '';
+    $('form-poster').value = editItem?.poster || '';
+    $('form-year').value = editItem?.year || '2024';
+    $('form-genre').value = editItem?.genre || '';
+    $('form-desc').value = editItem?.description || '';
+    $('form-url').value = editItem?.url || editItem?.videoUrl || '';
+    $('form-ep-num').value = editItem?.episodeNumber || 1;
+    $('form-start').value = fmt(editItem?.startTime || 0);
+    $('form-end').value = fmt(editItem?.endTime || 0);
 
-        el.addEventListener('dblclick', () => {
-            const item = allItems.find(i => i.id === el.dataset.id);
-            if (item) openItem(item);
-        });
-
-        el.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            contextTarget = el;
-            const item = allItems.find(i => i.id === el.dataset.id);
-            showContextMenu(e.clientX, e.clientY, item);
-        });
+    // Сброс видимости
+    ['group-poster','group-meta','group-url','group-season-type','group-ep-num','group-timeline'].forEach(id => {
+        const el = $(id); if (el) el.style.display = 'none';
     });
-}
+    $('form-poster').removeAttribute('required');
+    $('form-url').removeAttribute('required');
 
-function toggleSelect(id) {
-    if (selectedItems.has(id)) {
-        selectedItems.delete(id);
-    } else {
-        selectedItems.add(id);
+    const titles = { anime: 'Аниме/Фильм', series: 'Сериал', season: 'Сезон', episode: 'Серия' };
+    $('modal-title').textContent = editItem ? `✏️ ${titles[type]}` : `➕ ${titles[type]}`;
+    $('btn-submit').textContent = editItem ? '💾 Сохранить' : '➕ Добавить';
+
+    if (type === 'anime') {
+        $('group-poster').style.display = 'block'; $('form-poster').required = true;
+        $('group-meta').style.display = 'block';
+        $('group-url').style.display = 'block'; $('form-url').required = true;
+    } else if (type === 'series') {
+        $('group-poster').style.display = 'block'; $('form-poster').required = true;
+        $('group-meta').style.display = 'block';
+        // НЕТ url
+    } else if (type === 'season') {
+        $('group-poster').style.display = 'block'; $('form-poster').required = true;
+        $('group-meta').style.display = 'block';
+        $('group-season-type').style.display = 'block';
+        // Устанавливаем радио
+        const st = editItem?.seasonType || 'timeline';
+        document.querySelector('input[name="season-type"][value="' + st + '"]').checked = true;
+        toggleSeasonUrlFields();
+        document.querySelectorAll('input[name="season-type"]').forEach(r => r.onchange = toggleSeasonUrlFields);
+    } else if (type === 'episode') {
+        $('group-poster').style.display = 'none';
+        $('group-ep-num').style.display = 'block';
+        const season = allItems.find(i => i.id === parentId);
+        const isTimeline = season?.seasonType === 'timeline';
+        if (isTimeline) {
+            $('group-timeline').style.display = 'block';
+        } else {
+            $('group-url').style.display = 'block'; $('form-url').required = true;
+        }
     }
-    // Обновить визуал
-    document.querySelectorAll(`[data-id="${id}"]`).forEach(el => {
-        el.classList.toggle('selected', selectedItems.has(id));
-    });
+
+    $('modal-overlay').classList.add('active');
 }
 
-function openItem(item) {
+function toggleSeasonUrlFields() {
+    const isTimeline = document.querySelector('input[name="season-type"]:checked')?.value === 'timeline';
+    $('group-url').style.display = isTimeline ? 'block' : 'none';
+    if (isTimeline) $('form-url').required = true;
+    else $('form-url').removeAttribute('required');
+}
+
+function closeModal() { $('modal-overlay').classList.remove('active'); }
+$('modal-close').onclick = closeModal;
+$('modal-overlay').onclick = e => { if (e.target === $('modal-overlay')) closeModal(); };
+
+// Сохранение
+$('modal-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const id = $('form-id').value;
+    const type = $('form-type').value;
+    const parentId = $('form-parent').value || null;
+
+    const data = {
+        type,
+        title: $('form-title').value.trim(),
+        updatedAt: Date.now()
+    };
+
+    // Общие поля
+    if (['anime','series','season'].includes(type)) {
+        data.poster = $('form-poster').value.trim();
+        if (!data.poster) { alert('Введи постер!'); return; }
+    }
+    if (['anime','series','season'].includes(type)) {
+        data.year = $('form-year').value.trim() || '2024';
+        data.genre = $('form-genre').value.trim() || '';
+        data.description = $('form-desc').value.trim() || '';
+    }
+    if (type === 'anime') {
+        data.url = $('form-url').value.trim();
+        if (!data.url) { alert('Введи ссылку!'); return; }
+    }
+    if (type === 'season') {
+        data.seasonType = document.querySelector('input[name="season-type"]:checked')?.value || 'timeline';
+        if (data.seasonType === 'timeline') {
+            data.videoUrl = $('form-url').value.trim();
+            if (!data.videoUrl) { alert('Введи ссылку на видео для таймкодного сезона!'); return; }
+        }
+    }
+    if (type === 'episode') {
+        data.episodeNumber = $('form-ep-num').value;
+        const season = allItems.find(i => i.id === parentId);
+        if (season?.seasonType === 'timeline') {
+            data.startTime = parseTime($('form-start').value);
+            data.endTime = parseTime($('form-end').value);
+            if (data.endTime <= data.startTime) { alert('Конец должен быть позже начала!'); return; }
+        } else {
+            data.url = $('form-url').value.trim();
+            if (!data.url) { alert('Введи ссылку на видео серии!'); return; }
+        }
+    }
+    if (parentId) data.parentId = parentId;
+    if (!data.title) { alert('Введи название!'); return; }
+
+    try {
+        if (id) {
+            await update(ref(db, `items/${id}`), data);
+            toast('✅ Обновлено!');
+        } else {
+            data.createdAt = Date.now();
+            data.rating = 0;
+            await set(push(ref(db, 'items')), data);
+            toast('✅ Добавлено!');
+        }
+        closeModal();
+        await loadItems();
+        refreshView();
+    } catch (err) { console.error(err); alert('Ошибка: ' + err.message); }
+});
+
+// ====== CONTEXT MENU ======
+window._ctx = function(e, id) {
+    e.preventDefault();
+    contextTargetId = id;
+    const menu = $('context-menu');
+    const item = allItems.find(i => i.id === id);
+    menu.style.display = 'block';
+    menu.style.left = Math.min(e.clientX, window.innerWidth - 220) + 'px';
+    menu.style.top = Math.min(e.clientY, window.innerHeight - 160) + 'px';
+    const openBtn = menu.querySelector('[data-action="open"]');
+    if (item?.type === 'series' || item?.type === 'season') {
+        openBtn.style.display = 'flex';
+        openBtn.textContent = item.type === 'series' ? '📂 Открыть сезоны' : '📂 Открыть серии';
+    } else {
+        openBtn.style.display = 'none';
+    }
+};
+
+document.addEventListener('click', e => {
+    if (!$('context-menu').contains(e.target)) $('context-menu').style.display = 'none';
+});
+
+$('context-menu').querySelector('[data-action="edit"]').onclick = () => {
+    const item = allItems.find(i => i.id === contextTargetId);
+    if (item) openModal(item.type, item.parentId, item);
+    $('context-menu').style.display = 'none';
+};
+$('context-menu').querySelector('[data-action="open"]').onclick = () => {
+    window._openItem(contextTargetId);
+    $('context-menu').style.display = 'none';
+};
+$('context-menu').querySelector('[data-action="delete"]').onclick = async () => {
+    if (confirm('Удалить вместе с вложениями?')) {
+        await deleteRecursive(contextTargetId);
+        toast('🗑️ Удалено');
+        await loadItems();
+        refreshView();
+    }
+    $('context-menu').style.display = 'none';
+};
+
+window._openItem = function(id) {
+    const item = allItems.find(i => i.id === id);
+    if (!item) return;
     if (item.type === 'series') {
         currentView = 'season';
         currentParentId = item.id;
@@ -224,244 +332,59 @@ function openItem(item) {
         currentParentTitle = item.title || 'Сезон';
         refreshView();
     }
-}
-
-// ====== CONTEXT MENU ======
-function showContextMenu(x, y, item) {
-    const menu = contextMenu;
-    menu.style.display = 'block';
-    menu.style.left = Math.min(x, window.innerWidth - 220) + 'px';
-    menu.style.top = Math.min(y, window.innerHeight - 180) + 'px';
-
-    // Показываем/скрываем "Открыть" в зависимости от типа
-    const openAction = menu.querySelector('[data-action="open-children"]');
-    if (item.type === 'series' || item.type === 'season') {
-        openAction.style.display = 'flex';
-        const children = allItems.filter(i => i.parentId === item.id);
-        openAction.textContent = item.type === 'series' ? '📂 Открыть (сезоны)' : `📂 Открыть (серии: ${children.length})`;
-    } else {
-        openAction.style.display = 'none';
-    }
-
-    menu.dataset.itemId = item.id;
-}
-
-document.addEventListener('click', (e) => {
-    if (!contextMenu.contains(e.target)) {
-        contextMenu.style.display = 'none';
-    }
-});
-
-// Действия контекстного меню
-contextMenu.querySelector('[data-action="edit"]').onclick = () => {
-    const id = contextMenu.dataset.itemId;
-    const item = allItems.find(i => i.id === id);
-    if (item) openModal(item.type || 'anime', item.parentId || null, item);
-    contextMenu.style.display = 'none';
-};
-
-contextMenu.querySelector('[data-action="open-children"]').onclick = () => {
-    const id = contextMenu.dataset.itemId;
-    const item = allItems.find(i => i.id === id);
-    if (item) openItem(item);
-    contextMenu.style.display = 'none';
-};
-
-contextMenu.querySelector('[data-action="delete"]').onclick = async () => {
-    const id = contextMenu.dataset.itemId;
-    const item = allItems.find(i => i.id === id);
-    if (!item) return;
-
-    const childrenCount = allItems.filter(i => i.parentId === id).length;
-    const confirmMsg = childrenCount > 0
-        ? `Удалить "${item.title}" и ВСЕ вложенные элементы (${childrenCount} шт.)?`
-        : `Удалить "${item.title}"?`;
-
-    if (confirm(confirmMsg)) {
-        await deleteRecursive(id);
-        toast('🗑️ Удалено');
-        await loadAllItems();
-        refreshView();
-    }
-    contextMenu.style.display = 'none';
 };
 
 async function deleteRecursive(id) {
-    const children = allItems.filter(i => i.parentId === id);
-    for (const child of children) {
+    for (const child of allItems.filter(i => i.parentId === id)) {
         await deleteRecursive(child.id);
     }
     await remove(ref(db, `items/${id}`));
 }
 
-// ====== MODAL ======
-function openModal(type, parentId = null, editItem = null) {
-    $('form-id').value = editItem?.id || '';
-    $('form-type').value = type;
-    $('form-parent').value = parentId || '';
-    $('form-title').value = editItem?.title || '';
-    $('form-poster').value = editItem?.poster || '';
-    $('form-url').value = editItem?.url || editItem?.videoUrl || '';
-    $('form-year').value = editItem?.year || '2024';
-    $('form-genre').value = editItem?.genre || '';
-    $('form-desc').value = editItem?.description || '';
-    $('form-episode-number').value = editItem?.episodeNumber || 1;
-
-    // Настройка полей в зависимости от типа
-    const groupUrl = $('group-url');
-    const groupEpNum = $('group-epnum');
-    const urlInput = $('form-url');
-
-    if (type === 'series') {
-        groupUrl.style.display = 'none';
-        urlInput.removeAttribute('required');
-        groupEpNum.style.display = 'none';
-    } else if (type === 'season') {
-        groupUrl.style.display = 'block';
-        urlInput.setAttribute('required', 'required');
-        groupEpNum.style.display = 'none';
-    } else if (type === 'episode') {
-        groupUrl.style.display = 'block';
-        urlInput.setAttribute('required', 'required');
-        groupEpNum.style.display = 'block';
-    } else {
-        groupUrl.style.display = 'block';
-        urlInput.setAttribute('required', 'required');
-        groupEpNum.style.display = 'none';
-    }
-
-    const titles = { anime: 'Аниме/Фильм', series: 'Сериал', season: 'Сезон', episode: 'Серия' };
-    $('modal-title').textContent = editItem ? `✏️ Изменить ${titles[type]}` : `➕ Добавить ${titles[type]}`;
-    $('btn-submit').textContent = editItem ? '💾 Сохранить изменения' : '➕ Добавить';
-
-    modalOverlay.classList.add('active');
-}
-
-function closeModal() {
-    modalOverlay.classList.remove('active');
-}
-
-$('modal-close').onclick = closeModal;
-modalOverlay.onclick = (e) => {
-    if (e.target === modalOverlay) closeModal();
-};
-
-// Сохранение формы
-$('modal-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const id = $('form-id').value;
-    const type = $('form-type').value;
-    const parentId = $('form-parent').value || null;
-
-    const data = {
-        type: type,
-        title: $('form-title').value.trim(),
-        poster: $('form-poster').value.trim(),
-        year: $('form-year').value.trim() || '2024',
-        genre: $('form-genre').value.trim() || 'Аниме',
-        description: $('form-desc').value.trim() || '',
-        rating: 0,
-        updatedAt: Date.now()
-    };
-
-    if (type !== 'series') {
-        data.url = $('form-url').value.trim();
-        if (!data.url) { alert('Введите ссылку на видео!'); return; }
-    }
-
-    if (type === 'episode') {
-        data.episodeNumber = $('form-episode-number').value;
-    }
-
-    if (parentId) data.parentId = parentId;
-
-    if (!data.title || !data.poster) {
-        alert('Заполните название и постер!');
-        return;
-    }
-
-    try {
-        if (id) {
-            // Обновление
-            await update(ref(db, `items/${id}`), data);
-            toast('✅ Обновлено!');
-        } else {
-            // Создание
-            data.createdAt = Date.now();
-            await set(push(ref(db, 'items')), data);
-            toast('✅ Добавлено!');
-        }
-        closeModal();
-        await loadAllItems();
-        refreshView();
-    } catch (err) {
-        console.error(err);
-        alert('Ошибка: ' + err.message);
-    }
-});
-
-// ====== TOAST ======
-function toast(msg) {
-    const t = $('toast');
-    t.textContent = msg;
-    t.style.display = 'block';
-    clearTimeout(t._timeout);
-    t._timeout = setTimeout(() => { t.style.display = 'none'; }, 2500);
-}
-
-// ====== SIDEBAR NAVIGATION ======
-document.querySelectorAll('.sidebar-item[data-type]').forEach(item => {
-    item.addEventListener('click', () => {
-        document.querySelectorAll('.sidebar-item[data-type]').forEach(i => i.classList.remove('active'));
-        item.classList.add('active');
-        currentView = item.dataset.type;
+// ====== SIDEBAR ======
+document.querySelectorAll('.sidebar-item[data-type]').forEach(el => {
+    el.onclick = () => {
+        document.querySelectorAll('.sidebar-item[data-type]').forEach(e => e.classList.remove('active'));
+        el.classList.add('active');
+        currentView = el.dataset.type;
         currentParentId = null;
         refreshView();
-    });
+    };
 });
-
 $('sidebar-add-anime').onclick = () => openModal('anime');
 $('sidebar-add-series').onclick = () => openModal('series');
-
-// ====== REFRESH ======
-$('btn-refresh').onclick = async () => {
-    $('btn-refresh').style.transform = 'rotate(360deg)';
-    await loadAllItems();
-    refreshView();
-    toast('🔄 Обновлено');
-    setTimeout(() => { $('btn-refresh').style.transform = ''; }, 300);
-};
-
-// ====== ГЛОБАЛЬНЫЕ ФУНКЦИИ ======
-window._navToSeries = () => {
+$('btn-refresh').onclick = async () => { await loadItems(); refreshView(); toast('🔄 Обновлено'); };
+window._navSeries = () => {
     currentView = 'series';
     currentParentId = null;
-    document.querySelectorAll('.sidebar-item[data-type]').forEach(i => i.classList.remove('active'));
+    document.querySelectorAll('.sidebar-item[data-type]').forEach(e => e.classList.remove('active'));
     document.querySelector('.sidebar-item[data-type="series"]')?.classList.add('active');
     refreshView();
 };
 
-// ====== КЛАВИШИ ======
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-        if (modalOverlay.classList.contains('active')) closeModal();
-        contextMenu.style.display = 'none';
-    }
-    if (e.key === 'Delete' && selectedItems.size > 0) {
-        if (confirm(`Удалить ${selectedItems.size} выбранных элементов?`)) {
-            Promise.all([...selectedItems].map(id => deleteRecursive(id))).then(async () => {
-                selectedItems.clear();
-                await loadAllItems();
-                refreshView();
-                toast('🗑️ Удалено');
-            });
-        }
-    }
-});
-
-// ====== HELPER ======
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+// ====== HELPERS ======
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fmt(sec) {
+    if (!sec && sec !== 0) return '0:00:00';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    return `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
 }
+function parseTime(str) {
+    const parts = str.split(':').map(Number);
+    if (parts.length === 3) return parts[0]*3600 + parts[1]*60 + parts[2];
+    if (parts.length === 2) return parts[0]*60 + parts[1];
+    return parseInt(str) || 0;
+}
+function toast(msg) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    clearTimeout(t._t);
+    t._t = setTimeout(() => t.style.display = 'none', 2500);
+}
+
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeModal(); $('context-menu').style.display = 'none'; }
+});
