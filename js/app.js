@@ -286,3 +286,261 @@ async function saveToHistory(id, title) {
 
 // ============ НАВИГАЦИЯ ============
 function updateBreadcrumb() {
+    if (!navigationStack.length) {
+        breadcrumbDiv.innerHTML = '';
+        return;
+    }
+    let html = '<span class="back-btn" onclick="window.goBack()">← Назад</span> ';
+    navigationStack.forEach((nav, idx) => {
+        html += `<span onclick="window.goToLevel(${idx})">${nav.title}</span>`;
+        if (idx < navigationStack.length - 1) html += ' / ';
+    });
+    breadcrumbDiv.innerHTML = html;
+}
+
+window.goBack = function() {
+    if (navigationStack.length) {
+        const last = navigationStack.pop();
+        currentItems = last.items;
+        pageTitle.innerText = last.title;
+        activeGridIndex = last.scrollIndex || 0;
+        updateBreadcrumb();
+        appState = 'grid';
+        renderGrid();
+    } else {
+        navigateToHome();
+    }
+};
+
+window.goToLevel = function(level) {
+    while (navigationStack.length > level + 1) navigationStack.pop();
+    if (navigationStack.length) {
+        const current = navigationStack[navigationStack.length - 1];
+        currentItems = current.items;
+        pageTitle.innerText = current.title;
+        activeGridIndex = current.scrollIndex || 0;
+        updateBreadcrumb();
+        appState = 'grid';
+        renderGrid();
+    } else {
+        navigateToHome();
+    }
+};
+
+async function navigateToHome() {
+    navigationStack = [];
+    updateBreadcrumb();
+    pageTitle.innerText = '🏢 Студии';
+    searchBox.style.display = 'block';
+    currentItems = getRootItems();
+    activeGridIndex = 0;
+    appState = 'grid';
+    renderGrid();
+}
+
+async function navigateToHistory() {
+    if (!currentUser) {
+        alert('Войдите в аккаунт');
+        return;
+    }
+    navigationStack = [];
+    updateBreadcrumb();
+    try {
+        const snap = await get(ref(db, `history/${currentUser.uid}`));
+        const historyItems = [];
+        if (snap.exists()) {
+            const arr = Object.values(snap.val()).sort((a, b) => b.timestamp - a.timestamp);
+            for (const h of arr.slice(0, 50)) {
+                const found = allItems.find(i => i.id === h.movieId);
+                if (found) historyItems.push(found);
+            }
+        }
+        currentItems = historyItems;
+        pageTitle.innerText = '🕒 История просмотров';
+        searchBox.style.display = 'none';
+        renderGrid();
+    } catch (e) {
+        gridEl.innerHTML = '<div class="loading">Ошибка загрузки</div>';
+    }
+}
+
+function navigateToKids() {
+    navigationStack = [];
+    updateBreadcrumb();
+    currentItems = allItems.filter(i =>
+        (i.type === 'movie' || i.type === 'episode') &&
+        (i.forKids === true || i.genre === 'Мультфильм' || i.genre === 'Семейный' || i.genre === 'Кодомо')
+    );
+    pageTitle.innerText = '👶 Детям';
+    searchBox.style.display = 'none';
+    renderGrid();
+}
+
+function navigateToGenres() {
+    navigationStack = [];
+    updateBreadcrumb();
+    const movies = allItems.filter(i => i.type === 'movie' || i.type === 'episode');
+    const genres = [...new Set(movies.map(m => m.genre).filter(g => g))];
+    gridEl.innerHTML = genres.map(g => `
+        <div class="card" style="aspect-ratio:auto; padding:24px; text-align:center; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:8px;"
+             onclick="window.navigateToGenre('${g.replace(/'/g, "\\'")}')">
+            <span style="font-size:40px;">🎬</span>
+            <strong>${g}</strong>
+        </div>
+    `).join('');
+    pageTitle.innerText = '🎭 Жанры';
+    searchBox.style.display = 'none';
+    currentItems = [];
+}
+
+window.navigateToGenre = function(genre) {
+    navigationStack = [];
+    updateBreadcrumb();
+    currentItems = allItems.filter(i => (i.type === 'movie' || i.type === 'episode') && i.genre === genre);
+    pageTitle.innerText = `🎭 ${genre}`;
+    searchBox.style.display = 'block';
+    renderGrid();
+};
+
+// Поиск
+searchInput.addEventListener('input', (e) => {
+    const query = e.target.value.toLowerCase().trim();
+    if (!query) {
+        navigateToHome();
+        return;
+    }
+    const content = allItems.filter(i => i.type === 'movie' || i.type === 'episode' || i.type === 'series');
+    currentItems = content.filter(i =>
+        i.title?.toLowerCase().includes(query) ||
+        i.genre?.toLowerCase().includes(query) ||
+        i.description?.toLowerCase().includes(query)
+    );
+    pageTitle.innerText = `🔍 Результаты: "${query}"`;
+    activeGridIndex = 0;
+    renderGrid();
+});
+
+// ============ КЛАВИАТУРА ============
+document.addEventListener('keydown', (e) => {
+    const key = e.key;
+
+    // В плеере
+    if (playerDiv.style.display === 'block') {
+        if (key === 'Escape' || key === 'Backspace') {
+            e.preventDefault();
+            closePlayer();
+        }
+        return;
+    }
+
+    // В поиске
+    if (document.activeElement === searchInput) {
+        if (key === 'ArrowDown' && currentItems.length) {
+            searchInput.blur();
+            appState = 'grid';
+            activeGridIndex = 0;
+            renderFocus();
+        }
+        if (key === 'Escape') searchInput.blur();
+        return;
+    }
+
+    // В меню
+    if (appState === 'menu') {
+        if (key === 'ArrowUp') { e.preventDefault(); activeMenuIndex = (activeMenuIndex - 1 + menuItems.length) % menuItems.length; renderFocus(); }
+        else if (key === 'ArrowDown') { e.preventDefault(); activeMenuIndex = (activeMenuIndex + 1) % menuItems.length; renderFocus(); }
+        else if (key === 'ArrowRight') { e.preventDefault(); if (currentItems.length) { appState = 'grid'; activeGridIndex = 0; renderFocus(); } }
+        else if (key === 'Enter') {
+            const nav = menuItems[activeMenuIndex].dataset.nav;
+            handleMenuNavigation(nav);
+        }
+    }
+    // В гриде
+    else if (appState === 'grid' && currentItems.length) {
+        const total = currentItems.length;
+        const isEpisodes = currentItems[0]?.type === 'episode';
+
+        if (key === 'ArrowRight') {
+            e.preventDefault();
+            if (!isEpisodes && activeGridIndex + 1 < total) activeGridIndex++;
+            renderFocus();
+        } else if (key === 'ArrowLeft') {
+            e.preventDefault();
+            if (!isEpisodes && activeGridIndex > 0) activeGridIndex--;
+            else if (!isEpisodes && activeGridIndex === 0) { appState = 'menu'; activeMenuIndex = 0; renderFocus(); }
+            renderFocus();
+        } else if (key === 'ArrowDown') {
+            e.preventDefault();
+            if (isEpisodes) { if (activeGridIndex + 1 < total) activeGridIndex++; }
+            else { let next = activeGridIndex + COLS; if (next < total) activeGridIndex = next; }
+            renderFocus();
+        } else if (key === 'ArrowUp') {
+            e.preventDefault();
+            if (isEpisodes) { if (activeGridIndex > 0) activeGridIndex--; else searchInput.focus(); }
+            else { let prev = activeGridIndex - COLS; if (prev >= 0) activeGridIndex = prev; else searchInput.focus(); }
+            renderFocus();
+        } else if (key === 'Enter') {
+            e.preventDefault();
+            openItem(currentItems[activeGridIndex], activeGridIndex);
+        } else if (key === 'Backspace' || key === 'Escape') {
+            e.preventDefault();
+            window.goBack();
+        }
+    }
+});
+
+function handleMenuNavigation(nav) {
+    switch (nav) {
+        case 'home': navigateToHome(); break;
+        case 'history': navigateToHistory(); break;
+        case 'kids': navigateToKids(); break;
+        case 'genres': navigateToGenres(); break;
+        case 'admin': window.location.href = 'admin.html'; break;
+    }
+}
+
+// Клики по меню
+menuItems.forEach(el => {
+    el.addEventListener('click', () => handleMenuNavigation(el.dataset.nav));
+});
+
+// Кнопка пользователя
+userAvatar.onclick = () => {
+    if (!currentUser) {
+        window.location.href = 'login.html';
+    } else if (confirm('Выйти из аккаунта?')) {
+        signOut(auth).then(() => window.location.reload());
+    }
+};
+
+// Глобальные функции
+window.closePlayer = closePlayer;
+window.goBack = window.goBack;
+window.goToLevel = window.goToLevel;
+window.navigateToGenre = window.navigateToGenre;
+
+// ============ АВТОРИЗАЦИЯ ============
+onAuthStateChanged(auth, async (user) => {
+    if (user) {
+        currentUser = user;
+        const displayName = user.email ? user.email.split('@')[0].slice(0, 15) : 'User';
+        userAvatar.innerHTML = `👤 ${displayName}`;
+
+        const userRef = ref(db, `users/${user.uid}/isAdmin`);
+        const snap = await get(userRef);
+        if (snap.val() === true) {
+            adminMenu.style.display = 'flex';
+        }
+
+        await loadUserRatings();
+        await loadAllData();
+        navigateToHome();
+    } else {
+        currentUser = null;
+        userAvatar.innerHTML = '🔑 Войти';
+        adminMenu.style.display = 'none';
+        userRatings = {};
+        await loadAllData();
+        navigateToHome();
+    }
+});
